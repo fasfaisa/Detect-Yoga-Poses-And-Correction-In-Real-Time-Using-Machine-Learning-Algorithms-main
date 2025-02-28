@@ -38,6 +38,6 @@ plt.show()
 
 #predict_video(model,'video_demo/yoga poses demo 2/yoga poses demo 2/goddess.mp4',show=True)
 #predict('DATASET/TEST/goddess/00000092.png',model,show=True)
-correct_feedback(model,'downdog_warrior2.mp4','teacher_yoga/angle_teacher_yoga.csv')
+correct_feedback(model,'Detect-Yoga-Poses-And-Correction-In-Real-Time-Using-Machine-Learning-Algorithms-main/downdog_warrior2.mp4','Detect-Yoga-Poses-And-Correction-In-Real-Time-Using-Machine-Learning-Algorithms-main/teacher_yoga/angle_teacher_yoga.csv')
 
 cv2.destroyAllWindows()

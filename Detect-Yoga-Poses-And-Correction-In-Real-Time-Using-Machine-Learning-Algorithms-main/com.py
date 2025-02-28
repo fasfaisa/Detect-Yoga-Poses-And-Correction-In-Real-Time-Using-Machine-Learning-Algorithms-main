@@ -8,7 +8,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report
 import tensorflow as tf
-from tensorflow.keras.models import load_model, model_from_json
+from keras.models import load_model, model_from_json
+import time
 
 # MediaPipe setup
 mp_pose = mp.solutions.pose
@@ -17,15 +18,17 @@ mp_face = mp.solutions.face_detection
 face_detection = mp_face.FaceDetection(min_detection_confidence=0.5)
 
 # Emotion mapping to recommended yoga poses
+
 EMOTION_TO_POSE = {
-    "Angry": ["Warrior II", "Forward Fold", "Child's Pose"],
-    "Disgusted": ["Mountain Pose", "Tree Pose", "Legs Up The Wall"],
-    "Fearful": ["Child's Pose", "Corpse Pose", "Easy Pose"],
-    "Happy": ["Warrior I", "Tree Pose", "Half Moon Pose"],
-    "Neutral": ["Mountain Pose", "Downward Dog", "Warrior II"],
-    "Sad": ["Bridge Pose", "Camel Pose", "Fish Pose"],
-    "Surprised": ["Warrior III", "Eagle Pose", "Dancer Pose"]
+    "Angry": ["warrior2", "plank", "goddess"],  # Substituting with available poses
+    "Disgusted": ["tree", "downdog", "plank"],  # Substituting with available poses
+    "Fearful": ["plank", "tree", "goddess"],    # Substituting with available poses
+    "Happy": ["warrior2", "tree", "downdog"],
+    "Neutral": ["downdog", "warrior2", "tree"],
+    "Sad": ["goddess", "warrior2", "downdog"],  # Substituting with available poses
+    "Surprised": ["tree", "goddess", "plank"]   # Substituting with available poses
 }
+
 
 # Load emotion detection model - UPDATED to support both formats
 def load_emotion_model(model_json_path="emotion_model.json", model_weights_path="emotion_model.h5", 
@@ -126,6 +129,7 @@ def detect_emotion(image, emotion_model):
     except Exception as e:
         print(f"Error predicting emotion: {e}")
         return "neutral", 0.0
+
 def calculate_angle(landmark1, landmark2, landmark3):
     """Calculate the angle between three landmarks."""
     x1, y1, _ = landmark1.x, landmark1.y, landmark1.z
@@ -221,8 +225,6 @@ def extract_pose_angles(results):
         angles.append(right_hip_angle)
     
     return angles
-
-# THIS WAS THE MISSING FUNCTION
 def evaluate(data_test, model, show=False):
     """Evaluate model on test data."""
     target = data_test.loc[:, "target"]  # list of labels
@@ -230,17 +232,18 @@ def evaluate(data_test, model, show=False):
     predictions = []
     for i in range(len(data_test)):
         tmp = data_test.iloc[i, 0:len(data_test.columns) - 1]
-        tmp = tmp.values.tolist()
-        predictions.append(model.predict([tmp])[0])
+        tmp = tmp.values.reshape(1, -1)  # Reshape to 2D array
+        predictions.append(model.predict(tmp)[0])
     
     if show:
         print(confusion_matrix(predictions, target), '\n')
         print(classification_report(predictions, target))
     
     return predictions
-
 def load_reference_angles(teacher_data):
-    """Load reference angles for yoga poses from teacher data."""
+    """
+    Load reference angles from the teacher data CSV file.
+    """
     reference_angles_dict = {}
     
     if teacher_data and os.path.exists(teacher_data):
@@ -251,46 +254,222 @@ def load_reference_angles(teacher_data):
             # Print column names to understand the structure
             print("Teacher data columns:", teacher_df.columns.tolist())
             
-            # Check if the first column contains pose names (common format)
-            # If not, we'll just use the angle data without pose-specific feedback
-            if len(teacher_df.columns) > 12:  # At least 12 angle columns + possible pose column
-                for i, row in teacher_df.iterrows():
-                    # Try to get pose name from the first column
-                    pose_name = row.iloc[0]  # Assume first column has pose names
-                    angles = row.iloc[1:13].values.tolist()  # Get the next 12 columns as angles
+            # Look for pose-specific data
+            for i, row in teacher_df.iterrows():
+                try:
+                    # Assume last column has pose names
+                    angles = row.iloc[:12].values.tolist()  # Get the first 12 columns as angles
+                    pose_name = row.iloc[12]  # Pose name in column 12 (Fixed the typo 'ilc' -> 'iloc')
                     if isinstance(pose_name, str):
                         reference_angles_dict[pose_name] = angles
                         print(f"Loaded reference angles for pose: {pose_name}")
-            
-            # If we couldn't load pose-specific data, just note that
-            if not reference_angles_dict:
-                print("Could not identify pose-specific data in the teacher CSV.")
-                print("Will continue without pose-specific feedback.")
-        
+                except Exception as e:
+                    print(f"Error processing row {i}: {e}")
+                    continue
         except Exception as e:
             print(f"Error loading teacher data: {e}")
-            print("Will continue without pose-specific feedback.")
     
     return reference_angles_dict
+def real_time_detection(pose_model, teacher_data=None):
+    """
+    Perform real-time pose detection using the webcam with enhanced feedback.
+    """
+    # Load teacher data if available
+    reference_angles_dict = load_reference_angles(teacher_data)
+    
+    # Body part names for feedback
+    angle_name_list = ["Left Wrist", "Right Wrist", "Left Elbow", "Right Elbow", 
+                      "Left Shoulder", "Right Shoulder", "Left Knee", "Right Knee",
+                      "Left Ankle", "Right Ankle", "Left Hip", "Right Hip"]
 
-def real_time_emotion_yoga(pose_model, emotion_model, teacher_data=None):
+    # Define angle coordinates for detailed feedback
+    angle_coordinates = [
+        [mp_pose.PoseLandmark.LEFT_ELBOW.value, mp_pose.PoseLandmark.LEFT_WRIST.value, mp_pose.PoseLandmark.LEFT_INDEX.value],
+        [mp_pose.PoseLandmark.RIGHT_ELBOW.value, mp_pose.PoseLandmark.RIGHT_WRIST.value, mp_pose.PoseLandmark.RIGHT_INDEX.value],
+        [mp_pose.PoseLandmark.LEFT_SHOULDER.value, mp_pose.PoseLandmark.LEFT_ELBOW.value, mp_pose.PoseLandmark.LEFT_WRIST.value],
+        [mp_pose.PoseLandmark.RIGHT_SHOULDER.value, mp_pose.PoseLandmark.RIGHT_ELBOW.value, mp_pose.PoseLandmark.RIGHT_WRIST.value],
+        [mp_pose.PoseLandmark.LEFT_ELBOW.value, mp_pose.PoseLandmark.LEFT_SHOULDER.value, mp_pose.PoseLandmark.LEFT_HIP.value],
+        [mp_pose.PoseLandmark.RIGHT_HIP.value, mp_pose.PoseLandmark.RIGHT_SHOULDER.value, mp_pose.PoseLandmark.RIGHT_ELBOW.value],
+        [mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.LEFT_KNEE.value, mp_pose.PoseLandmark.LEFT_ANKLE.value],
+        [mp_pose.PoseLandmark.RIGHT_HIP.value, mp_pose.PoseLandmark.RIGHT_KNEE.value, mp_pose.PoseLandmark.RIGHT_ANKLE.value],
+        [mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.LEFT_ANKLE.value, mp_pose.PoseLandmark.LEFT_FOOT_INDEX.value],
+        [mp_pose.PoseLandmark.RIGHT_HIP.value, mp_pose.PoseLandmark.RIGHT_ANKLE.value, mp_pose.PoseLandmark.RIGHT_FOOT_INDEX.value],
+        [mp_pose.PoseLandmark.LEFT_KNEE.value, mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.RIGHT_HIP.value],
+        [mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.RIGHT_HIP.value, mp_pose.PoseLandmark.RIGHT_KNEE.value]
+    ]
+
+    # Start camera
+    cap = cv2.VideoCapture(0)  # Use 0 for webcam
+    
+    # Set up display parameters
+    confidence_threshold = 0.6  # Minimum confidence to display pose name
+    correction_value = 30  # Acceptable angle difference threshold
+    fps_time = time.time()
+    
+    # Initialize MediaPipe Pose
+    pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    
+    print("Starting real-time pose detection. Press 'q' to quit.")
+    
+    while cap.isOpened():
+        success, img = cap.read()
+        if not success:
+            print("Ignoring empty camera frame.")
+            continue
+            
+        # Convert to RGB and process with MediaPipe
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        results = pose.process(img_rgb)
+        
+        if results.pose_landmarks:
+            # Draw landmarks
+            img_with_landmarks = img.copy()
+            mp_drawing.draw_landmarks(img_with_landmarks, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            
+            # Extract angles and predict pose
+            list_angles = extract_pose_angles(results)
+            
+            if len(list_angles) == 12:  # Make sure we have all angles
+                # Reshape angles to 2D array for prediction
+                angles_array = np.array(list_angles).reshape(1, -1)
+                
+                # Get prediction and probability
+                pose_class = pose_model.predict(angles_array)[0]
+                pose_probs = pose_model.predict_proba(angles_array)[0]
+                pose_prob = np.max(pose_probs)
+                
+                # Display pose name and confidence
+                feedback = f"Pose: {pose_class}"
+                conf_text = f"Confidence: {pose_prob:.2f}"
+                
+                color = (0, 255, 0) if pose_prob > confidence_threshold else (0, 165, 255)
+                
+                cv2.putText(img_with_landmarks, feedback, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                cv2.putText(img_with_landmarks, conf_text, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                
+                # Enhanced feedback if we have reference angles for the detected pose
+                if pose_class in reference_angles_dict and pose_prob > confidence_threshold:
+                    reference_angles = reference_angles_dict[pose_class]
+                    
+                    # Count correct angles
+                    correct_angle_count = 0
+                    
+                    # Check each angle for feedback
+                    for i in range(12):
+                        if i < len(reference_angles) and i < len(list_angles):
+                            # Get angle difference
+                            angle_diff = abs(list_angles[i] - reference_angles[i])
+                            
+                            # Determine status
+                            if list_angles[i] < reference_angles[i] - correction_value:
+                                status = "more"
+                            elif reference_angles[i] + correction_value < list_angles[i]:
+                                status = "less"
+                            else:
+                                status = "OK"
+                                correct_angle_count += 1
+                            
+                            # Get landmarks for this angle
+                            landmarks = results.pose_landmarks.landmark
+                            idx1, idx2, idx3 = angle_coordinates[i]
+                            
+                            # Calculate position to display status near the joint
+                            point_b = (int(landmarks[idx2].x * img.shape[1]), 
+                                      int(landmarks[idx2].y * img.shape[0]))
+                            
+                            # Display status near joint
+                            status_position = (point_b[0] - int(img.shape[1] * 0.03), 
+                                             point_b[1] + int(img.shape[0] * 0.03))
+                            
+                            status_color = (0, 255, 0) if status == "OK" else (0, 0, 255)
+                            cv2.putText(img_with_landmarks, status, status_position, 
+                                       cv2.FONT_HERSHEY_PLAIN, 1, status_color, 2)
+                            
+                            # Display angle names
+                            cv2.putText(img_with_landmarks, angle_name_list[i], 
+                                       (point_b[0] - 50, point_b[1] - 10), 
+                                       cv2.FONT_HERSHEY_PLAIN, 0.8, (255, 0, 0), 1)
+                    
+                    # Overall posture feedback
+                    posture = "CORRECT" if correct_angle_count >= 9 else "WRONG"
+                    posture_color = (0, 255, 0) if posture == "CORRECT" else (0, 0, 255)
+                    cv2.putText(img_with_landmarks, f"Yoga movements: {posture}", (20, 100), 
+                               cv2.FONT_HERSHEY_PLAIN, 1.5, posture_color, 2)
+                
+                # Display FPS
+                fps = 1.0 / (time.time() - fps_time)
+                fps_time = time.time()
+                cv2.putText(img_with_landmarks, f"FPS: {fps:.1f}", (20, 130), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+                # Display the image with landmarks
+                cv2.imshow("Yoga Pose Recognition", img_with_landmarks)
+            else:
+                # If angles couldn't be extracted properly
+                cv2.putText(img, "Pose landmarks incomplete", (20, 40), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.imshow("Yoga Pose Recognition", img)
+        else:
+            # If no pose detected, show original image
+            cv2.putText(img, "No pose detected", (20, 40), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.imshow("Yoga Pose Recognition", img)
+            
+        # Break the loop on 'q' key press
+        if cv2.waitKey(5) & 0xFF == ord('q'):
+            break
+            
+    cap.release()
+    cv2.destroyAllWindows()
+
+def combined_realtime_emotion_yoga(pose_model, emotion_model, teacher_data=None):
     """
-    Perform real-time emotion detection and yoga pose recommendation.
+    Combined real-time emotion detection and yoga pose recognition with enhanced feedback.
     """
-    # Create a MediaPipe pose object inside the function
+    # Load teacher data if available
+    reference_angles_dict = load_reference_angles(teacher_data)
+    
+    # Debug: Print loaded reference angles
+    if reference_angles_dict:
+        print("Loaded reference angles for poses:")
+        for pose_name, angles in reference_angles_dict.items():
+            print(f"{pose_name}: {angles}")
+    else:
+        print("No reference angles loaded. Continuing without pose-specific feedback.")
+    
+    # Create MediaPipe pose object
     mp_pose_processor = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
     
-    # Get teacher data if available
-    reference_angles_dict = load_reference_angles(teacher_data)
+    # Body part names for feedback
+    angle_name_list = ["Left Wrist", "Right Wrist", "Left Elbow", "Right Elbow", 
+                      "Left Shoulder", "Right Shoulder", "Left Knee", "Right Knee",
+                      "Left Ankle", "Right Ankle", "Left Hip", "Right Hip"]
+    
+    # Create angle_coordinates for detailed feedback
+    angle_coordinates = [
+        [mp_pose.PoseLandmark.LEFT_ELBOW.value, mp_pose.PoseLandmark.LEFT_WRIST.value, mp_pose.PoseLandmark.LEFT_INDEX.value],
+        [mp_pose.PoseLandmark.RIGHT_ELBOW.value, mp_pose.PoseLandmark.RIGHT_WRIST.value, mp_pose.PoseLandmark.RIGHT_INDEX.value],
+        [mp_pose.PoseLandmark.LEFT_SHOULDER.value, mp_pose.PoseLandmark.LEFT_ELBOW.value, mp_pose.PoseLandmark.LEFT_WRIST.value],
+        [mp_pose.PoseLandmark.RIGHT_SHOULDER.value, mp_pose.PoseLandmark.RIGHT_ELBOW.value, mp_pose.PoseLandmark.RIGHT_WRIST.value],
+        [mp_pose.PoseLandmark.LEFT_ELBOW.value, mp_pose.PoseLandmark.LEFT_SHOULDER.value, mp_pose.PoseLandmark.LEFT_HIP.value],
+        [mp_pose.PoseLandmark.RIGHT_HIP.value, mp_pose.PoseLandmark.RIGHT_SHOULDER.value, mp_pose.PoseLandmark.RIGHT_ELBOW.value],
+        [mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.LEFT_KNEE.value, mp_pose.PoseLandmark.LEFT_ANKLE.value],
+        [mp_pose.PoseLandmark.RIGHT_HIP.value, mp_pose.PoseLandmark.RIGHT_KNEE.value, mp_pose.PoseLandmark.RIGHT_ANKLE.value],
+        [mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.LEFT_ANKLE.value, mp_pose.PoseLandmark.LEFT_FOOT_INDEX.value],
+        [mp_pose.PoseLandmark.RIGHT_HIP.value, mp_pose.PoseLandmark.RIGHT_ANKLE.value, mp_pose.PoseLandmark.RIGHT_FOOT_INDEX.value],
+        [mp_pose.PoseLandmark.LEFT_KNEE.value, mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.RIGHT_HIP.value],
+        [mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.RIGHT_HIP.value, mp_pose.PoseLandmark.RIGHT_KNEE.value]
+    ]
     
     # Start camera
     cap = cv2.VideoCapture(0)  # Use 0 for webcam
     
-    # Set up display
-    feedback_text = ""
+    # Set up display parameters
     confidence_threshold = 0.6  # Minimum confidence to display pose name
-    
-    print("Starting real-time emotion detection and yoga pose recommendation. Press 'q' to quit.")
+    correction_value = 30  # Acceptable angle difference threshold
+    fps_time = time.time()
+    font_scale = 0.7
+    line_height = 30
     
     # Variables to track emotion state
     current_emotion = "neutral"
@@ -303,12 +482,10 @@ def real_time_emotion_yoga(pose_model, emotion_model, teacher_data=None):
     emotion_display_time = 0
     recommendation_display_time = 0
     
-    # For showing the recommendations
-    font_scale = 0.7
-    line_height = 30
-    
     # Debug counter
     frame_counter = 0
+    
+    print("Starting combined emotion-based yoga assistant. Press 'q' to quit, 'r' to reset to emotion detection.")
     
     while cap.isOpened():
         success, img = cap.read()
@@ -319,7 +496,7 @@ def real_time_emotion_yoga(pose_model, emotion_model, teacher_data=None):
         # Convert to RGB and process with MediaPipe
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        # Create a blank overlay for text
+        # Create a copy for overlay
         overlay = img.copy()
         
         # Debug info - every 30 frames
@@ -378,7 +555,7 @@ def real_time_emotion_yoga(pose_model, emotion_model, teacher_data=None):
                 print(f"Selected pose: {selected_pose}")
         
         elif mode == "pose_detection":
-            # Process pose with MediaPipe - use the local mp_pose_processor object
+            # Process pose with MediaPipe
             pose_results = mp_pose_processor.process(img_rgb)
             
             if pose_results.pose_landmarks:
@@ -405,38 +582,77 @@ def real_time_emotion_yoga(pose_model, emotion_model, teacher_data=None):
                     cv2.putText(overlay, conf_text, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, 2)
                     cv2.putText(overlay, target_text, (20, 100), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 255), 2)
                     
+                    # Display FPS
+                    fps = 1.0 / (time.time() - fps_time)
+                    fps_time = time.time()
+                    cv2.putText(overlay, f"FPS: {fps:.1f}", (20, 130), 
+                               cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), 2)
+                    
                     # Provide feedback based on detected pose
                     if pose_class.lower() == selected_pose.lower() and pose_prob > confidence_threshold:
-                        cv2.putText(overlay, "Great job! You're doing the correct pose!", (20, 130), 
+                        cv2.putText(overlay, "Great job! You're doing the correct pose!", (20, 160), 
                                     cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), 2)
                     else:
-                        cv2.putText(overlay, f"Try to get into the {selected_pose} pose", (20, 130), 
+                        cv2.putText(overlay, f"Try to get into the {selected_pose} pose", (20, 160), 
                                     cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 255), 2)
                     
-                    # If we have reference angles for the detected pose, provide feedback
+
+                    # Enhanced feedback if we have reference angles for the selected pose
                     if selected_pose in reference_angles_dict and pose_prob > confidence_threshold:
                         reference_angles = reference_angles_dict[selected_pose]
-                        if len(reference_angles) == len(list_angles):
-                            angle_diff = [abs(a - b) for a, b in zip(list_angles, reference_angles)]
-                            max_diff_idx = np.argmax(angle_diff)
-                            
-                            # Map index to body part
-                            body_parts = ["Left Wrist", "Right Wrist", "Left Elbow", "Right Elbow", 
-                                         "Left Shoulder", "Right Shoulder", "Left Knee", "Right Knee",
-                                         "Left Ankle", "Right Ankle", "Left Hip", "Right Hip"]
-                            
-                            # Provide feedback based on largest angle difference
-                            if angle_diff[max_diff_idx] > 20:  # If difference is significant
-                                feedback_text = f"Adjust your {body_parts[max_diff_idx]}"
-                                cv2.putText(overlay, feedback_text, (20, 160), 
-                                            cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 255), 2)
+                        
+                        # Count correct angles
+                        correct_angle_count = 0
+                        
+                        # Check each angle for feedback
+                        for i in range(12):
+                            if i < len(reference_angles) and i < len(list_angles):
+                                # Get angle difference
+                                angle_diff = abs(list_angles[i] - reference_angles[i])
+                                
+                                # Determine status
+                                if list_angles[i] < reference_angles[i] - correction_value:
+                                    status = "more"
+                                elif reference_angles[i] + correction_value < list_angles[i]:
+                                    status = "less"
+                                else:
+                                    status = "OK"
+                                    correct_angle_count += 1
+                                
+                                # Get landmarks for this angle
+                                landmarks = pose_results.pose_landmarks.landmark
+                                idx1, idx2, idx3 = angle_coordinates[i]
+                                
+                                # Calculate position to display status near the joint
+                                point_b = (int(landmarks[idx2].x * img.shape[1]), 
+                                          int(landmarks[idx2].y * img.shape[0]))
+                                
+                                # Display status near joint
+                                status_position = (point_b[0] - int(img.shape[1] * 0.03), 
+                                                 point_b[1] + int(img.shape[0] * 0.03))
+                                
+                                status_color = (0, 255, 0) if status == "OK" else (0, 0, 255)
+                                cv2.putText(overlay, status, status_position, 
+                                           cv2.FONT_HERSHEY_PLAIN, 1, status_color, 2)
+                                
+                                # Display angle names
+                                cv2.putText(overlay, angle_name_list[i], 
+                                           (point_b[0] - 50, point_b[1] - 10), 
+                                           cv2.FONT_HERSHEY_PLAIN, 0.8, (255, 0, 0), 1)
+                        
+                        # Overall posture feedback
+                        posture = "CORRECT" if correct_angle_count >= 9 else "WRONG"
+                        posture_color = (0, 255, 0) if posture == "CORRECT" else (0, 0, 255)
+                        cv2.putText(overlay, f"Yoga movements: {posture}", (20, 190), 
+                                   cv2.FONT_HERSHEY_PLAIN, 1.5, posture_color, 2)
             
             else:
                 # If no pose detected
                 cv2.putText(overlay, "No pose detected", (20, 40), 
                             cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 255), 2)
-                cv2.putText(overlay, f"Try to get into the {selected_pose} pose", (20, 70), 
-                            cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 255), 2)
+                if selected_pose:
+                    cv2.putText(overlay, f"Try to get into the {selected_pose} pose", (20, 70), 
+                                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 255), 2)
         
         # Show the image with overlay
         cv2.imshow("Emotion-Based Yoga Assistant", overlay)
@@ -451,6 +667,7 @@ def real_time_emotion_yoga(pose_model, emotion_model, teacher_data=None):
             mode = "emotion_detection"
             emotion_confirmed = False
             emotion_stability_counter = 0
+            selected_pose = None
         elif key == ord('1') and mode == "pose_recommendation" and len(recommended_poses) >= 1:
             mode = "pose_detection"
             selected_pose = recommended_poses[0]
@@ -467,44 +684,7 @@ def real_time_emotion_yoga(pose_model, emotion_model, teacher_data=None):
     cap.release()
     cv2.destroyAllWindows()
 
-# Function to test the emotion model with a static image
-def test_emotion_model(model, test_image_path=None):
-    """Test the emotion detection model on a static image"""
-    if model is None:
-        print("No emotion model loaded to test.")
-        return
-    
-    if test_image_path and os.path.exists(test_image_path):
-        img = cv2.imread(test_image_path)
-        emotion, prob = detect_emotion(img, model)
-        print(f"Test image emotion: {emotion}, confidence: {prob:.2f}")
-    else:
-        print("No test image provided or file not found.")
-        print("Taking a snapshot from camera instead...")
-        
-        # Take a snapshot from the camera for testing
-        cap = cv2.VideoCapture(0)
-        ret, frame = cap.read()
-        if ret:
-            # Save the frame for future reference
-            test_path = "emotion_test_image.jpg"
-            cv2.imwrite(test_path, frame)
-            print(f"Saved test image to {test_path}")
-            
-            # Test on the captured frame
-            emotion, prob = detect_emotion(frame, model)
-            print(f"Test snapshot emotion: {emotion}, confidence: {prob:.2f}")
-            
-            # Display the frame with detected emotion
-            cv2.putText(frame, f"Emotion: {emotion} ({prob:.2f})", 
-                       (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            cv2.imshow("Emotion Test", frame)
-            cv2.waitKey(3000)  # Display for 3 seconds
-            cv2.destroyAllWindows()
-        
-        cap.release()
-
-# Main execution - UPDATED to look for both model formats
+# Update the main function to use the combined function
 def main():
     # Load the data and train the pose model
     try:
@@ -561,28 +741,38 @@ def main():
             model_path=emotion_model_full
         )
         
-        # Print model summary if loaded
-        if emotion_model:
-            emotion_model.summary()
-            
-            # Test the emotion model
-            print("\nTesting emotion detection model...")
-            test_emotion_model(emotion_model)
+        # Look for teacher data in various possible locations
+        teacher_data_paths = [
+            os.path.join(script_dir, "angle_teacher_yoga.csv"),
+            os.path.join(script_dir, "teacher_yoga/angle_teacher_yoga.csv"),
+            os.path.join(script_dir, "../teacher_yoga/angle_teacher_yoga.csv"),
+            os.path.join(script_dir, "Detect-Yoga-Poses-And-Correction-In-Real-Time-Using-Machine-Learning-Algorithms-main/teacher_yoga/angle_teacher_yoga.csv")
+        ]
+        
+        teacher_data = None
+        for path in teacher_data_paths:
+            if os.path.exists(path):
+                teacher_data = path
+                print(f"Found teacher reference data at: {path}")
+                break
+                
+        if not teacher_data:
+            print("Teacher reference data not found. Continuing without feedback.")
+        
+        # Ask user which mode to run
+        print("\nChoose a mode to run:")
+        print("1. Basic pose detection")
+        print("2. Emotion-based yoga assistant")
+        choice = input("Enter your choice (1 or 2): ")
+        
+        if choice == "1":
+            # Run basic pose detection
+            print("\nStarting basic pose detection...")
+            real_time_detection(pose_model, teacher_data)
         else:
-            print("Warning: No emotion model found. Continuing with only pose detection.")
-        
-        # Start real-time emotion-based yoga pose detection
-        print("\nStarting real-time emotion-based yoga pose detection...")
-        print("Press 'q' to quit, 'r' to reset to emotion detection")
-        
-        # Look for teacher data
-        teacher_data = os.path.join(script_dir, "teacher_yoga/angle_teacher_yoga.csv")
-        if not os.path.exists(teacher_data):
-            teacher_data = None
-            print("Teacher reference data not found.")
-        
-        # Run real-time detection with emotion
-        real_time_emotion_yoga(pose_model, emotion_model, teacher_data)
+            # Run emotion-based yoga assistant
+            print("\nStarting emotion-based yoga assistant...")
+            combined_realtime_emotion_yoga(pose_model, emotion_model, teacher_data)
         
     except FileNotFoundError as e:
         print(f"Error: {e}")
@@ -591,6 +781,5 @@ def main():
         print(f"An error occurred: {e}")
         import traceback
         traceback.print_exc()
-
 if __name__ == "__main__":
     main()

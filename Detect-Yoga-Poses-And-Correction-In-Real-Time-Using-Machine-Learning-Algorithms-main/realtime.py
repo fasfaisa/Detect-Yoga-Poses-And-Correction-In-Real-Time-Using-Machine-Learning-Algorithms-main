@@ -6,6 +6,7 @@ import numpy as np
 from sklearn.svm import SVC
 import seaborn as sns
 import matplotlib.pyplot as plt
+import time
 from sklearn.metrics import confusion_matrix, classification_report
 
 # MediaPipe setup
@@ -124,10 +125,9 @@ def evaluate(data_test, model, show=False):
         print(classification_report(predictions, target))
     
     return predictions
-
 def real_time_detection(model, teacher_data=None):
     """
-    Perform real-time pose detection using the webcam.
+    Perform real-time pose detection using the webcam with enhanced feedback.
     """
     # Get teacher data if available
     reference_angles_dict = {}
@@ -140,16 +140,18 @@ def real_time_detection(model, teacher_data=None):
             # Print column names to understand the structure
             print("Teacher data columns:", teacher_df.columns.tolist())
             
-            # Check if the first column contains pose names (common format)
-            # If not, we'll just use the angle data without pose-specific feedback
-            if len(teacher_df.columns) > 12:  # At least 12 angle columns + possible pose column
-                for i, row in teacher_df.iterrows():
-                    # Try to get pose name from the first column
-                    pose_name = row.iloc[0]  # Assume first column has pose names
-                    angles = row.iloc[1:13].values.tolist()  # Get the next 12 columns as angles
+            # Look for pose-specific data
+            for i, row in teacher_df.iterrows():
+                try:
+                    # Assume last column has pose names (based on your second code snippet)
+                    angles = row.iloc[:12].values.tolist()  # Get the first 12 columns as angles
+                    pose_name = row.iloc[12]  # Pose name in column 12
                     if isinstance(pose_name, str):
                         reference_angles_dict[pose_name] = angles
                         print(f"Loaded reference angles for pose: {pose_name}")
+                except Exception as e:
+                    print(f"Error processing row {i}: {e}")
+                    continue
             
             # If we couldn't load pose-specific data, just note that
             if not reference_angles_dict:
@@ -160,12 +162,34 @@ def real_time_detection(model, teacher_data=None):
             print(f"Error loading teacher data: {e}")
             print("Will continue without pose-specific feedback.")
     
+    # Body part names for feedback
+    angle_name_list = ["Left Wrist", "Right Wrist", "Left Elbow", "Right Elbow", 
+                       "Left Shoulder", "Right Shoulder", "Left Knee", "Right Knee",
+                       "Left Ankle", "Right Ankle", "Left Hip", "Right Hip"]
+    
+    # Create angle_coordinates for more detailed feedback similar to the second file
+    angle_coordinates = [
+        [mp_pose.PoseLandmark.LEFT_ELBOW.value, mp_pose.PoseLandmark.LEFT_WRIST.value, mp_pose.PoseLandmark.LEFT_INDEX.value],
+        [mp_pose.PoseLandmark.RIGHT_ELBOW.value, mp_pose.PoseLandmark.RIGHT_WRIST.value, mp_pose.PoseLandmark.RIGHT_INDEX.value],
+        [mp_pose.PoseLandmark.LEFT_SHOULDER.value, mp_pose.PoseLandmark.LEFT_ELBOW.value, mp_pose.PoseLandmark.LEFT_WRIST.value],
+        [mp_pose.PoseLandmark.RIGHT_SHOULDER.value, mp_pose.PoseLandmark.RIGHT_ELBOW.value, mp_pose.PoseLandmark.RIGHT_WRIST.value],
+        [mp_pose.PoseLandmark.LEFT_ELBOW.value, mp_pose.PoseLandmark.LEFT_SHOULDER.value, mp_pose.PoseLandmark.LEFT_HIP.value],
+        [mp_pose.PoseLandmark.RIGHT_HIP.value, mp_pose.PoseLandmark.RIGHT_SHOULDER.value, mp_pose.PoseLandmark.RIGHT_ELBOW.value],
+        [mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.LEFT_KNEE.value, mp_pose.PoseLandmark.LEFT_ANKLE.value],
+        [mp_pose.PoseLandmark.RIGHT_HIP.value, mp_pose.PoseLandmark.RIGHT_KNEE.value, mp_pose.PoseLandmark.RIGHT_ANKLE.value],
+        [mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.LEFT_ANKLE.value, mp_pose.PoseLandmark.LEFT_FOOT_INDEX.value],
+        [mp_pose.PoseLandmark.RIGHT_HIP.value, mp_pose.PoseLandmark.RIGHT_ANKLE.value, mp_pose.PoseLandmark.RIGHT_FOOT_INDEX.value],
+        [mp_pose.PoseLandmark.LEFT_KNEE.value, mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.RIGHT_HIP.value],
+        [mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.RIGHT_HIP.value, mp_pose.PoseLandmark.RIGHT_KNEE.value]
+    ]
+    
     # Start camera
     cap = cv2.VideoCapture(0)  # Use 0 for webcam
     
-    # Set up display
-    feedback_text = ""
+    # Set up display parameters
     confidence_threshold = 0.6  # Minimum confidence to display pose name
+    correction_value = 30  # Acceptable angle difference threshold
+    fps_time = time.time()
     
     print("Starting real-time pose detection. Press 'q' to quit.")
     
@@ -202,30 +226,72 @@ def real_time_detection(model, teacher_data=None):
                 cv2.putText(img_with_landmarks, feedback, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                 cv2.putText(img_with_landmarks, conf_text, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                 
-                # If we have reference angles for the detected pose, provide feedback
+                # Enhanced feedback if we have reference angles for the detected pose
                 if pose_class in reference_angles_dict and pose_prob > confidence_threshold:
                     reference_angles = reference_angles_dict[pose_class]
-                    if len(reference_angles) == len(list_angles):
-                        angle_diff = [abs(a - b) for a, b in zip(list_angles, reference_angles)]
-                        max_diff_idx = np.argmax(angle_diff)
-                        
-                        # Map index to body part
-                        body_parts = ["Left Wrist", "Right Wrist", "Left Elbow", "Right Elbow", 
-                                     "Left Shoulder", "Right Shoulder", "Left Knee", "Right Knee",
-                                     "Left Ankle", "Right Ankle", "Left Hip", "Right Hip"]
-                        
-                        # Provide feedback based on largest angle difference
-                        if angle_diff[max_diff_idx] > 20:  # If difference is significant
-                            feedback_text = f"Adjust your {body_parts[max_diff_idx]}"
-                            cv2.putText(img_with_landmarks, feedback_text, (20, 100), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    
+                    # Count correct angles
+                    correct_angle_count = 0
+                    
+                    # Check each angle for feedback
+                    for i in range(12):
+                        if i < len(reference_angles) and i < len(list_angles):
+                            # Get angle difference
+                            angle_diff = abs(list_angles[i] - reference_angles[i])
+                            
+                            # Determine status
+                            if list_angles[i] < reference_angles[i] - correction_value:
+                                status = "more"
+                            elif reference_angles[i] + correction_value < list_angles[i]:
+                                status = "less"
+                            else:
+                                status = "OK"
+                                correct_angle_count += 1
+                            
+                            # Get landmarks for this angle
+                            landmarks = results.pose_landmarks.landmark
+                            idx1, idx2, idx3 = angle_coordinates[i]
+                            
+                            # Calculate position to display status near the joint
+                            point_b = (int(landmarks[idx2].x * img.shape[1]), 
+                                      int(landmarks[idx2].y * img.shape[0]))
+                            
+                            # Display status near joint
+                            status_position = (point_b[0] - int(img.shape[1] * 0.03), 
+                                             point_b[1] + int(img.shape[0] * 0.03))
+                            
+                            status_color = (0, 255, 0) if status == "OK" else (0, 0, 255)
+                            cv2.putText(img_with_landmarks, status, status_position, 
+                                       cv2.FONT_HERSHEY_PLAIN, 1, status_color, 2)
+                            
+                            # Display angle names
+                            cv2.putText(img_with_landmarks, angle_name_list[i], 
+                                       (point_b[0] - 50, point_b[1] - 10), 
+                                       cv2.FONT_HERSHEY_PLAIN, 0.8, (255, 0, 0), 1)
+                    
+                    # Overall posture feedback
+                    posture = "CORRECT" if correct_angle_count >= 9 else "WRONG"
+                    posture_color = (0, 255, 0) if posture == "CORRECT" else (0, 0, 255)
+                    cv2.putText(img_with_landmarks, f"Yoga movements: {posture}", (20, 100), 
+                               cv2.FONT_HERSHEY_PLAIN, 1.5, posture_color, 2)
+                
+                # Display FPS
+                fps = 1.0 / (time.time() - fps_time)
+                fps_time = time.time()
+                cv2.putText(img_with_landmarks, f"FPS: {fps:.1f}", (20, 130), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
-            # Display the image with landmarks
-            cv2.imshow("Yoga Pose Recognition", img_with_landmarks)
-            
+                # Display the image with landmarks
+                cv2.imshow("Yoga Pose Recognition", img_with_landmarks)
+            else:
+                # If angles couldn't be extracted properly
+                cv2.putText(img, "Pose landmarks incomplete", (20, 40), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.imshow("Yoga Pose Recognition", img)
         else:
             # If no pose detected, show original image
-            cv2.putText(img, "No pose detected", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(img, "No pose detected", (20, 40), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             cv2.imshow("Yoga Pose Recognition", img)
             
         # Break the loop on 'q' key press
@@ -235,7 +301,8 @@ def real_time_detection(model, teacher_data=None):
     cap.release()
     cv2.destroyAllWindows()
 
-# Main execution
+
+# Update the main function to find the correct teacher data path
 def main():
     # Load the data and train the model
     try:
@@ -273,11 +340,23 @@ def main():
         print("\nStarting real-time yoga pose detection...")
         print("Press 'q' to quit")
         
-        # Look for teacher data
-        teacher_data = os.path.join(script_dir, "teacher_yoga/angle_teacher_yoga.csv")
-        if not os.path.exists(teacher_data):
-            teacher_data = None
-            print("Teacher reference data not found.")
+        # Look for teacher data in various possible locations
+        teacher_data_paths = [
+            os.path.join(script_dir, "angle_teacher_yoga.csv"),
+            os.path.join(script_dir, "teacher_yoga/angle_teacher_yoga.csv"),
+            os.path.join(script_dir, "../teacher_yoga/angle_teacher_yoga.csv"),
+            os.path.join(script_dir, "Detect-Yoga-Poses-And-Correction-In-Real-Time-Using-Machine-Learning-Algorithms-main/teacher_yoga/angle_teacher_yoga.csv")
+        ]
+        
+        teacher_data = None
+        for path in teacher_data_paths:
+            if os.path.exists(path):
+                teacher_data = path
+                print(f"Found teacher reference data at: {path}")
+                break
+                
+        if not teacher_data:
+            print("Teacher reference data not found. Continuing without feedback.")
         
         # Run real-time detection
         real_time_detection(model, teacher_data)
